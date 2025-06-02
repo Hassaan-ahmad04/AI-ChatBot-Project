@@ -4,13 +4,16 @@ import json
 import requests # Using requests library for HTTP calls
 from dotenv import load_dotenv
 import streamlit as st
+import sqlite3 
+import uuid    
+import datetime 
 
 # Load environment variables from .env file
 load_dotenv()
 
-# --- Configuration ---
+# --- Configuration --- (Keep only ONE instance of this block)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}" # Make sure your model name is correct
+GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
 CHATBOT_NAME = "Membership & Subscription Assistant"
 DOMAIN_CONTEXT = """
 You are a customer service chatbot for a 'Membership and Subscription Manager' service.
@@ -45,6 +48,52 @@ FAQS = {
     "upgrade plan": "To upgrade your plan, please log into your account and go to the 'Subscription' or 'Plan Details' section. You should see options to upgrade to a higher tier. What specific plan are you interested in?",
     "billing issue": "I'm sorry to hear you're having a billing issue. Could you please provide more details about the problem? For example, are you seeing an incorrect charge, or is a payment failing?"
 }
+# (Ensure the duplicated Configuration block below this is removed from your actual file)
+
+# --- Database Setup --- 
+DB_NAME = "chatbot_history.db"
+
+def init_db():
+    """Initializes the database and creates the chat_logs table if it doesn't exist."""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS chat_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        role TEXT NOT NULL, 
+        content TEXT NOT NULL,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db() 
+# --- End Database Setup ---
+
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# +++ ADD THE save_message_to_db FUNCTION HERE +++
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+def save_message_to_db(session_id, role, content):
+    """Saves a chat message to the SQLite database."""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        # Using a specific timestamp when inserting
+        current_timestamp = datetime.datetime.now()
+        cursor.execute("INSERT INTO chat_logs (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                       (session_id, role, content, current_timestamp))
+        conn.commit()
+    except sqlite3.Error as e:
+        st.error(f"Database error during save: {e}") 
+    finally:
+        if conn:
+            conn.close()
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# +++ END OF save_message_to_db FUNCTION +++
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
 
 # --- Streamlit Page Configuration ---
 st.set_page_config(page_title=CHATBOT_NAME, page_icon="💬")
@@ -53,8 +102,17 @@ st.title(CHATBOT_NAME)
 # --- Initialize session state for conversation history ---
 # `gemini_history` stores the conversation in the format required by the Gemini API.
 # `display_messages` stores messages for Streamlit's UI.
+
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# +++ ADD SESSION ID INITIALIZATION HERE +++
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+if 'session_id' not in st.session_state: 
+    st.session_state.session_id = str(uuid.uuid4())
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# +++ END OF SESSION ID INITIALIZATION +++
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
 if "gemini_history" not in st.session_state:
-    # Prime the model with domain context and its role.
     st.session_state.gemini_history = [
         {"role": "user", "parts": [{"text": DOMAIN_CONTEXT}]},
         {"role": "model", "parts": [{"text": f"Understood. I am the **{CHATBOT_NAME}**. I will ONLY answer questions related to managing memberships and subscriptions as outlined. If a query is outside this scope, I will inform you that I cannot assist with it."}]}
@@ -68,9 +126,9 @@ if "display_messages" not in st.session_state:
 # --- Display existing chat messages ---
 for message in st.session_state.display_messages:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"]) # Use markdown for rich text
+        st.markdown(message["content"]) 
 
-# --- Function to get bot response ---
+# --- Function to get bot response --- (This function remains the same as in your provided code)
 def get_bot_response(user_message):
     # 1. Add user message to Gemini history (API format)
     st.session_state.gemini_history.append({"role": "user", "parts": [{"text": user_message}]})
@@ -94,7 +152,7 @@ def get_bot_response(user_message):
                 "temperature": 0.6,
                 "topK": 1,
                 "topP": 0.95,
-                "maxOutputTokens": 512, # Increased slightly for potentially richer markdown
+                "maxOutputTokens": 512, 
             },
             "safetySettings": [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
@@ -104,10 +162,10 @@ def get_bot_response(user_message):
             ]
         }
         headers = {"Content-Type": "application/json"}
-        response = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(payload), timeout=30)
-        response.raise_for_status()
+        response_api = requests.post(GEMINI_API_URL, headers=headers, data=json.dumps(payload), timeout=30) # Renamed response to response_api to avoid conflict
+        response_api.raise_for_status()
         
-        result = response.json()
+        result = response_api.json()
 
         if (result.get("candidates") and
             result["candidates"][0].get("content") and
@@ -137,8 +195,7 @@ def get_bot_response(user_message):
     
     # 5. Limit history size (for Gemini API)
     MAX_HISTORY_TURNS = 10 
-    if len(st.session_state.gemini_history) > (MAX_HISTORY_TURNS * 2 + 2): # +2 for initial context
-        # Keep the initial system prompts and the most recent turns
+    if len(st.session_state.gemini_history) > (MAX_HISTORY_TURNS * 2 + 2): 
         st.session_state.gemini_history = st.session_state.gemini_history[:2] + st.session_state.gemini_history[-(MAX_HISTORY_TURNS*2):]
     
     return bot_reply
@@ -150,19 +207,31 @@ if prompt := st.chat_input("Ask me about memberships or subscriptions..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # +++ SAVE USER MESSAGE TO DB HERE +++
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    save_message_to_db(st.session_state.session_id, "user", prompt)
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # +++ END OF SAVE USER MESSAGE +++
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
     # Get bot response
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."): # Typing indicator
-            response = get_bot_response(prompt)
-        st.markdown(response) # Display bot response using markdown
+        with st.spinner("Thinking..."): 
+            response = get_bot_response(prompt) # 'response' here is the bot's text reply
+        st.markdown(response) 
 
     # Add bot response to display messages
     st.session_state.display_messages.append({"role": "assistant", "content": response})
 
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # +++ SAVE BOT MESSAGE TO DB HERE +++
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    save_message_to_db(st.session_state.session_id, "assistant", response)
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    # +++ END OF SAVE BOT MESSAGE +++
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
 # --- Instructions for running (optional, can be in a separate section or comments) ---
-# To run this app:
-# 1. Save it as a Python file (e.g., app.py).
-# 2. Create a .env file in the same directory with your GEMINI_API_KEY:
-#    GEMINI_API_KEY=your_actual_api_key_here
-# 3. Install necessary libraries: pip install streamlit requests python-dotenv
-# 4. Open your terminal and run: streamlit run app.py
+# (Your existing comments)
